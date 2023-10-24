@@ -93,7 +93,7 @@ class DataManager(ABC):
                 self.get_dataset(split),
                 batch_size=batch_size,
                 shuffle=shuffle,
-                num_workers=self.params.num_workers,
+                num_workers=0,#self.params.num_workers,
                 pin_memory=True
             )
         return self.loaders_cache[k]
