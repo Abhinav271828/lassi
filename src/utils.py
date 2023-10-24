@@ -28,7 +28,7 @@ def common_experiment_setup(seed: int):
 
 def load_model(model, checkpoint_file: Path, msg_model_name: str):
     logger.debug(f'Load {msg_model_name} from checkpoint file: {checkpoint_file}')
-    model.load_state_dict(torch.load(checkpoint_file))
+    model.load_state_dict(torch.load(checkpoint_file, map_location='cpu'))
     model.eval()
 
 
