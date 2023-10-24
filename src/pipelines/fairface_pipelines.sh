@@ -84,7 +84,7 @@ e2e)
     --cls_alpha 0.001 --cls_n 100000 --cls_n0 2000 \
     --enc_alpha 0.01 --enc_n 10000 --enc_n0 10000 \
     --sampling_batch_size 10000 --certification_batch_size 32 --skip 32 --split test \
-    --use_cuda False
+    --use_cuda False \
     "$@"
   ;;
 
