@@ -1,3 +1,6 @@
+import sys
+sys.path.append('../')
+
 from loguru import logger
 from argparse import Namespace
 import shutil
@@ -6,7 +9,9 @@ from abstract_trainer import AbstractTrainer
 from models.lassi_encoder import LASSIEncoder
 from metrics import ClassificationAndFairnessMetrics
 from torchtext.datasets import MNLI
-from torch.utils.data import DataLoader
+from nltk.tokenize import word_tokenize
+from torchtext.vocab import build_vocab_from_iterator
+from torch.utils.data import DataLoader, Dataset
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -68,12 +73,51 @@ class NLIDataManager(DataManager):
     def num_classes(self) -> int:
         return 3
 
+class NLIDataset(Dataset):
+    def __init__(self, split):
+        dp = MNLI(root='~/Desktop/Projects/lassi/data', split=split)
+        v = []
+        max_prem_length, max_conc_length = 0, 0
+        for _, prem, conc in dp:
+            v += [[w.lower()] for w in word_tokenize(prem) + word_tokenize(conc)]
+            max_prem_length = max(max_prem_length, len(prem))
+            max_conc_length = max(max_conc_length, len(conc))
+        self.vocab = build_vocab_from_iterator(v, specials=['<UNK>', '<PAD>'])
+
+        UNK_IDX = self.vocab.get_stoi()['<UNK>']
+        self.vocab.set_default_index(UNK_IDX)
+
+        PAD_IDX = self.vocab.get_stoi()['<PAD>']
+
+        self.labels = []
+        self.premises = []
+        self.conclusions = []
+
+        for label, prem, conc in dp:
+            tp = word_tokenize(prem)
+            tc = word_tokenize(conc)
+            self.labels.append(label)
+            self.premises.append(self.vocab.lookup_indices(tp) + \
+                                 [PAD_IDX for _ in range(max_prem_length-len(tp))])
+            self.conclusions.append(self.vocab.lookup_indices(tc) + \
+                                 [PAD_IDX for _ in range(max_conc_length-len(tc))])
+        
+        self.labels = torch.tensor(self.labels)
+        self.premises = torch.tensor(self.premises)
+        self.conclusions = torch.tensor(self.conclusions)
+    
+    def __getitem__(self, idx):
+        return self.premises[idx], self.conclusions[idx], self.labels[idx]
+    
+    def __len__(self, idx):
+        return self.labels.shape[0]
+
 class NLIOriginalDataManager(NLIDataManager):
-    def __init__(selfe):
+    def __init__(self):
         super(NLIOriginalDataManager, self).__init__()
 
     def _get_dataset(self, split: str):
-        return MNLI('~/Desktop/Projects/lassi/data', split)
+        return NLIDataset(split)
 
 class LSTMEncoder(nn.Module):
     def __init__(self):
