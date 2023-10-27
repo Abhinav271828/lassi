@@ -2,22 +2,23 @@ import sys
 sys.path.append('../')
 
 from loguru import logger
-from argparse import Namespace
+import argparse
 import shutil
 from abc import ABC, abstractmethod
+from tqdm import tqdm
 from abstract_trainer import AbstractTrainer
 from models.lassi_encoder import LASSIEncoder
 from metrics import ClassificationAndFairnessMetrics
 from torchtext.datasets import MNLI
 from nltk.tokenize import word_tokenize
-from torchtext.vocab import build_vocab_from_iterator
+from torchtext.vocab import build_vocab_from_iterator, GloVe
 from torch.utils.data import DataLoader, Dataset
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import utils
 
-params = Namespace(adv_loss_weight=0.0, attr_vectors_dir='attr_vectors_avg_diff', batch_size=64, certification_batch_size=32, classify_attributes=['Age_bin'], cls_alpha=0.001, cls_layers=[], cls_loss_weight=1.0, cls_n=100000, cls_n0=2000, cls_sigma=None, cls_sigmas=[5.0], data_augmentation=False, dataset='glow_fairface_latent_lmdb', delta=0.0, enc_alpha=0.01, enc_n=10000, enc_n0=10000, enc_sigma=0.325, encoder_hidden_layers=[2048, 1024], encoder_normalize_output=True, encoder_type='linear', encoder_use_bn=True, epochs=10, fair_classifier_data_augmentation='random_noise', fair_classifier_name=None, fair_encoder_name=None, gen_model_name='glow_fairface', gen_model_type='Glow', glow_affine=False, glow_n_block=4, glow_n_flow=32, glow_no_lu=False, image_size=64, input_representation='latent', lr=0.001, n_bits=5, num_workers=4, parallel=False, perform_endpoints_analysis=False, perturb='Black', perturb_epsilon=0.5, random_attack_num_samples=10, recon_decoder_layers=[], recon_decoder_type='linear', recon_loss_weight=0.0, resnet_encoder_pretrained=False, run_only_one_seed=False, sampling_batch_size=10000, save_artefacts=True, save_period=1, seed=42, skip=32, split='test', train_classifier_batch_size=128, train_classifier_classify_attributes=[], train_classifier_epochs=1, train_encoder_batch_size=500, train_encoder_classify_attributes=[], train_encoder_epochs=5, use_cuda=False, use_gen_model_reconstructions=False)
+params = argparse.Namespace(adv_loss_weight=0.0, attr_vectors_dir='attr_vectors_avg_diff', batch_size=64, certification_batch_size=32, classify_attributes=['Age_bin'], cls_alpha=0.001, cls_layers=[], cls_loss_weight=1.0, cls_n=100000, cls_n0=2000, cls_sigma=None, cls_sigmas=[5.0], data_augmentation=False, dataset='glow_fairface_latent_lmdb', delta=0.0, enc_alpha=0.01, enc_n=10000, enc_n0=10000, enc_sigma=0.325, encoder_hidden_layers=[2048, 1024], encoder_normalize_output=True, encoder_type='linear', encoder_use_bn=True, epochs=10, fair_classifier_data_augmentation='random_noise', fair_classifier_name=None, fair_encoder_name=None, gen_model_name='glow_fairface', gen_model_type='Glow', glow_affine=False, glow_n_block=4, glow_n_flow=32, glow_no_lu=False, image_size=64, input_representation='latent', lr=0.001, n_bits=5, num_workers=4, parallel=False, perform_endpoints_analysis=False, perturb='Black', perturb_epsilon=0.5, random_attack_num_samples=10, recon_decoder_layers=[], recon_decoder_type='linear', recon_loss_weight=0.0, resnet_encoder_pretrained=False, run_only_one_seed=False, sampling_batch_size=10000, save_artefacts=True, save_period=1, seed=42, skip=32, split='test', train_classifier_batch_size=128, train_classifier_classify_attributes=[], train_classifier_epochs=1, train_encoder_batch_size=500, train_encoder_classify_attributes=[], train_encoder_epochs=5, use_cuda=False, use_gen_model_reconstructions=False)
 
 
 class DataManager(ABC):
@@ -75,41 +76,49 @@ class NLIDataManager(DataManager):
 
 class NLIDataset(Dataset):
     def __init__(self, split):
-        dp = MNLI(root='~/Desktop/Projects/lassi/data', split=split)
-        v = []
-        max_prem_length, max_conc_length = 0, 0
-        for _, prem, conc in dp:
-            v += [[w.lower()] for w in word_tokenize(prem) + word_tokenize(conc)]
-            max_prem_length = max(max_prem_length, len(prem))
-            max_conc_length = max(max_conc_length, len(conc))
-        self.vocab = build_vocab_from_iterator(v, specials=['<UNK>', '<PAD>'])
+        try:
+            self.vocab = torch.load('train_vocab.pt')
+        except:
+            dp = MNLI(root='', split='train')
+            v = []
+            max_prem_length, max_conc_length = 0, 0
+            for _, prem, conc in tqdm(dp, desc="Building vocab", total=392702):
+                v += [[w.lower()] for w in word_tokenize(prem) + word_tokenize(conc)]
+                max_prem_length = max(max_prem_length, len(prem))
+                max_conc_length = max(max_conc_length, len(conc))
+            self.vocab = build_vocab_from_iterator(v, specials=['<UNK>', '<PAD>'])
 
         UNK_IDX = self.vocab.get_stoi()['<UNK>']
         self.vocab.set_default_index(UNK_IDX)
 
-        PAD_IDX = self.vocab.get_stoi()['<PAD>']
+        try:
+            self.labels = torch.load(f'{split}_labels.pt')
+            self.premises = torch.load(f'{split}_premises.pt')
+            self.conclusions = torch.load(f'{split}_conclusions.pt')
+        except:
+            self.labels = []
+            self.premises = []
+            self.conclusions = []
 
-        self.labels = []
-        self.premises = []
-        self.conclusions = []
-
-        for label, prem, conc in dp:
-            tp = word_tokenize(prem)
-            tc = word_tokenize(conc)
-            self.labels.append(label)
-            self.premises.append(self.vocab.lookup_indices(tp) + \
-                                 [PAD_IDX for _ in range(max_prem_length-len(tp))])
-            self.conclusions.append(self.vocab.lookup_indices(tc) + \
-                                 [PAD_IDX for _ in range(max_conc_length-len(tc))])
+            PAD_IDX = self.vocab.get_stoi()['<PAD>']
+            dp = MNLI(root='', split=split)
+            for label, prem, conc in tqdm(dp, desc="Tokenizing"):
+                tp = word_tokenize(prem)
+                tc = word_tokenize(conc)
+                self.labels.append(label)
+                self.premises.append(self.vocab.lookup_indices(tp) + \
+                                     [PAD_IDX for _ in range(max_prem_length-len(tp))])
+                self.conclusions.append(self.vocab.lookup_indices(tc) + \
+                                     [PAD_IDX for _ in range(max_conc_length-len(tc))])
         
-        self.labels = torch.tensor(self.labels)
-        self.premises = torch.tensor(self.premises)
-        self.conclusions = torch.tensor(self.conclusions)
+            self.labels = torch.tensor(self.labels)
+            self.premises = torch.tensor(self.premises)
+            self.conclusions = torch.tensor(self.conclusions)
     
     def __getitem__(self, idx):
         return self.premises[idx], self.conclusions[idx], self.labels[idx]
     
-    def __len__(self, idx):
+    def __len__(self):
         return self.labels.shape[0]
 
 class NLIOriginalDataManager(NLIDataManager):
@@ -121,11 +130,22 @@ class NLIOriginalDataManager(NLIDataManager):
 
 class LSTMEncoder(nn.Module):
     def __init__(self):
-        self.embedder = nn.Embedding(num_embeddings=10000, embedding_dim=768)
-        self.encoder = nn.LSTM(input_size=768, hidden_size=512, batch_first=True, bidirectional=True)
+        super(LSTMEncoder, self).__init__()
+        self.embedder = nn.Embedding(num_embeddings=84871, embedding_dim=256)
+        self.encoder = nn.LSTM(input_size=256, hidden_size=256, batch_first=True, bidirectional=True)
 
     def forward(self, text_batch):
-        pass
+        p_emb = self.embedder(text_batch[0])
+        p_enc, _ = self.encoder(p_emb)
+        p = p_enc[:, -1, :] #[64, 512]
+
+        c_emb = self.embedder(text_batch[1])
+        c_enc, _ = self.encoder(c_emb)
+        c = c_enc[:, -1, :] #[64, 512]
+
+        out = torch.concat([p, c, p*c, p-c], dim=1) #[64, 2048]
+        return out
+
 
 class LASSIEncoderNeg(nn.Module):
     def __init__(self):
@@ -470,5 +490,6 @@ class FairEncoderExperiment(AbstractTrainer):
             return lassi_encoder, aux_classifier
         else:
             return lassi_encoder
+
 
 
