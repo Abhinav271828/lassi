@@ -150,7 +150,7 @@ class LSTMEncoder(nn.Module):
 class LASSIEncoderNeg(nn.Module):
     def __init__(self):
         super(LASSIEncoder, self).__init__()
-        self.encoder = None
+        self.encoder = LSTMEncoder()
 
     @staticmethod
     def latent_dimension() -> int:
